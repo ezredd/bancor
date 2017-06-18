@@ -22,7 +22,7 @@ class Reserve:
         print(self)
 
 
-class SmartToken2:
+class TokenChanger:
     def __init__(self, name, supply, reserve_tokens=dict(), verbose=0, precision=4):
         self.name = name
         self.reserve_tokens = reserve_tokens
@@ -202,6 +202,61 @@ class SmartToken2:
             ))
         return px_imp
 
+
+class SmartETF(TokenChanger):
+    def __init__(self, name, supply, reserve_tokens=dict(), verbose=0, precision=4):
+        TokenChanger.__init__(self, name, supply, reserve_tokens, verbose, precision)
+
+    @property
+    def index(self):
+        return dict(zip(self.reserve_tokens.keys(),[r.crr for r in list(self.reserve_tokens.values())]))
+
+    def creation(self, basket):
+        """
+        convert a basket of reserve currencies into units of the SmartETF
+        :param basket:
+        :return: shares of the SmartETF
+        """
+        assert(type(basket) is list)
+        bad_currencies = set(dict(basket).keys()).difference(self.reserve_tokens.keys())
+        if len(bad_currencies) != 0:
+            raise Exception('bad currencies in creation basket: {}'.format(bad_currencies))
+
+        shares = 0
+        for cmp in basket:
+            token = cmp[0]
+            amount = cmp[1]
+            # we do not allow const=False here because when sending a perfect basket
+            # it is crucial to modify the partial prices at each iteration in order to
+            # achieve the min slippage
+            shares += self.buy(amount=amount, from_token=token, const=False)
+            if self.verbose > 1:
+                print('[{n}][PARTIAL] {ppx}'.format(
+                    n=self.name,
+                    ppx=dround(self.partial_prices(), self.precision)
+                ))
+
+        return shares
+
+    def redemption(self, shares):
+        """
+        convert shares of the SmartETF into a basket of reserve currencies
+        :param shares:
+        :return:
+        """
+        basket = dict()
+        for token in self.index.keys():
+            amount = self.index[token] * shares
+            basket[token] = self.sell(amount, token, const=False)
+            if self.verbose > 1:
+                print('[{n}][PARTIAL] {ppx}'.format(
+                    n=self.name,
+                    ppx=dround(self.partial_prices(), self.precision)
+                ))
+
+        return basket
+
+
 class SmartToken:
     def __init__(self,name,R,S,F,verbose=0):
         """
@@ -271,7 +326,8 @@ class SmartToken:
         self.R *= scale
         self.P *= scale
         self.log()
-        
+
+
 class Portfolio:
     def __init__(self,cash,token,verbose=0):
         assert(cash >= 0)
@@ -307,23 +363,28 @@ class Portfolio:
         self.cash += self.token.exchange_shares(-qty)
         self.log()
 
+
 def example1(verbose):
-    print('example 1: buy then sell returns the wealth to initial level, so our intermediate wealth was "illusory"')
+    print('[EXAMPLE 1] buy then sell returns the wealth to initial level, so our intermediate wealth was "illusory"')
     BNT = SmartToken('BNT',100.0,100.0,0.2,verbose)
     pi = Portfolio(100.0,BNT,verbose)
     pi.buy(100)
     pi.sell(pi.shares)
+    return BNT
+
 
 def example2(verbose):
-    print('example 2 (consistency): we check that multiple small buys are equivalent to one large one')
+    print('[EXAMPLE 2] (consistency): we check that multiple small buys are equivalent to one large one')
     BNT = SmartToken('BNT',100.0,100.0,0.2,verbose)
     pi = Portfolio(100.0,BNT,verbose)
     pi.buy(50)
     pi.buy(50)
     pi.sell(pi.shares)
+    return BNT
+
 
 def example3(verbose):
-    print('example 3 (consistency): we check that if we buy and the market moves meanwhile the result is consistent')
+    print('[EXAMPLE 3] (consistency): we check that if we buy and the market moves meanwhile the result is consistent')
     BNT = SmartToken('BNT',100.0,100.0,0.2,verbose)
     pi = Portfolio(100.0,BNT,verbose)
     pi.buy(50)
@@ -332,14 +393,16 @@ def example3(verbose):
     pi.sell(pi.shares)
     np.testing.assert_almost_equal(pi.cash,102.5)
     np.testing.assert_almost_equal(BNT.price,5.25)
+    return BNT
+
 
 def example4(verbose):
-    print('example 4 (exchange token): we show the slippage incurred by using an exchange token')
+    print('[EXAMPLE 4] (exchange token): we show the slippage incurred by using an exchange token')
     GNO = Reserve('GNO',amount=25000,crr=0.2,verbose=1)
     GNO.log()
     ETH = Reserve('ETH',amount=100000,crr=0.8,verbose=1)
     ETH.log()
-    GNOETH=SmartToken2('GNOETH',reserve_tokens=dict(),supply=1000,verbose=1)
+    GNOETH=TokenChanger('GNOETH', reserve_tokens=dict(), supply=1000, verbose=1)
     GNOETH.log()
     GNOETH.add_reserve(GNO)
     GNOETH.log()
@@ -348,12 +411,14 @@ def example4(verbose):
     P0 = GNOETH.exchange_price('GNO', 'ETH')
     amt = GNOETH.exchange(10,'GNO', 'ETH')
     P1 = GNOETH.exchange_price('GNO', 'ETH')
+    return GNOETH
+
 
 def example5(verbose):
-    print('where we show that for a basket token there is a cheapest reserve to buy the smart token')
+    print('[EXAMPLE 5] where we show that for a basket token there is a cheapest reserve to buy the smart token')
     GNO = Reserve('GNO',amount=25000, crr=0.2, verbose=1)
     ETH = Reserve('ETH',amount=100000, crr=0.8, verbose=1)
-    GNOETH=SmartToken2('GNOETH', reserve_tokens=dict(GNO=GNO, ETH=ETH), supply=1000, verbose=1, precision=4)
+    GNOETH=TokenChanger('GNOETH', reserve_tokens=dict(GNO=GNO, ETH=ETH), supply=1000, verbose=1, precision=4)
     print('all partial prices are equal:{}'.format(GNOETH.partial_prices()))
     P0 = GNOETH.exchange_price('GNO','ETH')
     amt = GNOETH.exchange(100,'GNO','ETH')
@@ -363,6 +428,109 @@ def example5(verbose):
     print('proof:')
     GNOETH.buy(100, 'ETH', const=True)
     GNOETH.buy(100, 'GNO', const=True)
+    return GNOETH
+
+
+def make_infra(verbose=0,infra_verbose=1):
+    if verbose:
+        print('data from coinmarketcap accurate as of 20170617 3am GMT, all amounts expressed in ETH')
+    mktcap = dict(RLC=152889.0, GNT=1394191.0, STORJ=136614.0, SC=1233871.0)
+    if verbose:
+        print('mktcaps: {}'.format(mktcap))
+    supply = dict(RLC=79070793, GNT=829252000, STORJ=51173144, SC=26994297972)
+    if verbose:
+        print('supplies: {}'.format(supply))
+    price = dict(zip(mktcap.keys(), [mktcap[k] / supply[k] for k in mktcap.keys()]))
+    if verbose:
+        print('prices: {}'.format(price))
+    tot_mktcap = np.sum(list(mktcap.values()))
+    if verbose:
+        print('total mktcap={}'.format(tot_mktcap))
+    idx_wgts = dict(zip(mktcap.keys(), [int(mc * 1.0 / tot_mktcap * 100000) / 100000 for _, mc in mktcap.items()]))
+    if verbose:
+        print('index weights are chosen to reflect the mktcap relative weight at the time we rebalance the index, which happens now')
+        print('index weights: {}'.format(idx_wgts))
+        print('we build INFRA assuming we use 1% of each mktcap as reserves and issue the corresponding supply of INFRA as tokens')
+    RLC = Reserve('RLC', mktcap['RLC'] / 100, idx_wgts['RLC'], 1)
+    GNT = Reserve('GNT', mktcap['GNT'] / 100, idx_wgts['GNT'], 1)
+    STORJ = Reserve('STORJ', mktcap['STORJ'] / 100, idx_wgts['STORJ'], 1)
+    SC = Reserve('SC', mktcap['SC'] / 100, idx_wgts['SC'], 1)
+    reserves = dict(RLC=RLC, GNT=GNT, STORJ=STORJ, SC=SC)
+    # an ethereum infrastructure ETF
+    INFRA = SmartETF('INFRA', reserve_tokens=reserves, supply=100000, verbose=infra_verbose)
+    if verbose:
+        print('INFRA price={}'.format(INFRA.price))
+        print('INFRA partial prices: {}'.format(INFRA.partial_prices()))
+    return INFRA
+
+
+def make_bnt(verbose=0):
+    eth_raised = 396720
+    eth_reserve = eth_raised * 0.2
+    bnt_supply = 79323978.3607422567766216
+    ETH = Reserve('ETH', amount=eth_reserve, crr=0.1, verbose=1)
+    BNT = TokenChanger(name='BNT', supply=bnt_supply, reserve_tokens=dict(ETH=ETH), verbose=verbose, precision=5)
+    return BNT, eth_raised
+
+
+def example6(verbose):
+    print('[EXAMPLE 6] where we build an infrastructure etf on the bancor protocole, called INFRA')
+    make_infra(verbose)
+
+
+def example7(verbose):
+    print('[EXAMPLE 7] where we show that 23.2% of ETH raised during the Bancor ICO suffice to double the BNT price on monday')
+    BNT, eth_raised = make_bnt(verbose=verbose)
+    BNT.buy(0.232*eth_raised, 'ETH', const=True) # const=True allows not to modify the object
+
+
+def dround(d,prec):
+    scale = 10**prec
+    return dict(zip(d.keys(),[int(v*scale)/scale for v in list(d.values())]))
+
+
+def example8(verbose):
+    print('[EXAMPLE 8] a creation basket with the right proportions suffers a very very small slippage')
+    print('In this example we can exchange as much as 30% of the total reserve and incur less than 0.1bp of slippage')
+    print('pay CLOSE ATTENTION to the partial prices, at the end they are restored to the original levels')
+    INFRA = make_infra(verbose=0,infra_verbose=2)
+    print('[INFO] partial px: {}'.format(dround(INFRA.partial_prices(), 4)))
+    print('[INDEX] {}'.format(INFRA.index))
+    tgtshares = 30000
+    basket = [(k, tgtshares * v * INFRA.price) for k, v in INFRA.index.items()]
+    basket_value = np.sum([x[1] for x in basket])
+    print('[INFO] TGTSH={tgt} TGTVAL={tot} RESERVE={res} PERC={perc}%'.format(
+        tgt=tgtshares,
+        tot=np.round(basket_value, 4),
+        res=np.round(INFRA.reserve, 4),
+        perc=np.round(100.0 * basket_value / INFRA.reserve, 3)))
+    print('[INFO] BASKET: {}'.format(dround(dict(basket), 4)))
+    shares = INFRA.creation(basket=[basket[b] for b in [3, 2, 1, 0]])
+    INFRA.log()
+    print('[INFO] partial px: {}'.format(dround(INFRA.partial_prices(), 4)))
+    print('[RESULT] TGT={tgt} REC={rec} SLIP={slip}(bps)'.format(
+        tgt=tgtshares, rec=np.round(shares, 3), slip=np.round(10000 * (shares * 1.0 / tgtshares - 1), 3)))
+
+
+def example9(verbose):
+    print('[EXAMPLE 9] a creation basket which is very imbalanced')
+    print('In this example we exchange only 3% of the total reserve by incur 22% slippage')
+    print('pay CLOSE ATTENTION to the partial prices, at the end they are very imbalanced')
+    INFRA = make_infra()
+    tgtshares = 3000
+    value = tgtshares * INFRA.price
+    print('TGT={tgt} VAL={val} RESERVE={res} PERC={perc}%'.format(
+        tgt=tgtshares,
+        val=np.round(value, 4),
+        res=np.round(INFRA.reserve, 4),
+        perc=np.round(value * 100.0 / INFRA.reserve, 4)
+    ))
+    shares = INFRA.buy(tgtshares * INFRA.price, 'STORJ')
+    INFRA.log()
+    print('[INFO] partial px: {}'.format(dround(INFRA.partial_prices(), 4)))
+    print('[RESULT] TGT={tgt} REC={rec} SLIP={slip}(bps)'.format(
+        tgt=tgtshares, rec=np.round(shares, 3), slip=np.round(10000 * (shares * 1.0 / tgtshares - 1), 3)))
+
 
 def main():
     verbose=1
@@ -376,6 +544,14 @@ def main():
     example4(verbose)
     print('='*80)
     example5(verbose)
+    print('='*80)
+    example6(verbose)
+    print('='*80)
+    example7(verbose)
+    print('='*80)
+    example8(verbose)
+    print('='*80)
+    example9(verbose)
 
 if __name__=='__main__':
     main()
