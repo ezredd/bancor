@@ -245,8 +245,9 @@ class SmartETF(TokenChanger):
         :return:
         """
         basket = dict()
+        ratio = (1-shares/self.supply)
         for token in self.index.keys():
-            amount = self.index[token] * shares
+            amount = self.supply*(1.0-np.power(ratio,self.index[token]))
             basket[token] = self.sell(amount, token, const=False)
             if self.verbose > 1:
                 print('[{n}][PARTIAL] {ppx}'.format(
@@ -532,6 +533,23 @@ def example9(verbose):
         tgt=tgtshares, rec=np.round(shares, 3), slip=np.round(10000 * (shares * 1.0 / tgtshares - 1), 3)))
 
 
+def example10(verbose):
+    print('[EXAMPLE 10] perfect redemption with no slippage')
+    INFRA = make_infra(infra_verbose=2)
+    P0 = INFRA.price
+    shares = 20000
+    basket = INFRA.redemption(shares)
+    P1 = INFRA.price
+    INFRA.log()
+    print('[INFO] P0={p0} P1={p1}'.format(p0=np.round(P0, 4),p1=np.round(P1, 4)))
+    print('[INFO] partial px: {}'.format(dround(INFRA.partial_prices(), 4)))
+    print('[INFO] basket:{}'.format(dround(basket, 3)))
+    rec = np.sum(list(basket.values()))
+    P_eff = rec/shares
+    print('[RESULT] P0={P0} SELL={tgt} REC={rec} SLIP={slip}(bps)'.format(
+        P0=np.round(P0,3), tgt=shares, rec=np.round(rec, 3),
+        slip=np.round(10000 * (1-P_eff / P0), 3)))
+
 def main():
     verbose=1
     print('='*80)
@@ -552,6 +570,8 @@ def main():
     example8(verbose)
     print('='*80)
     example9(verbose)
+    print('='*80)
+    example10(verbose)
 
 if __name__=='__main__':
     main()
