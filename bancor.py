@@ -22,18 +22,20 @@ class Reserve:
         print(self)
 
 
-
 class SmartToken2:
-    def __init__(self, name, supply, reserve_tokens=dict(), verbose=0):
+    def __init__(self, name, supply, reserve_tokens=dict(), verbose=0, precision=4):
         self.name = name
         self.reserve_tokens = reserve_tokens
         self.supply = supply
         self.verbose=verbose
+        self.precision=precision
+        if self.verbose > 0:
+            self.log()
 
     def log(self):
         if self.verbose > 0:
-            print('[{}]'.format(self.name)
-                  + ' S={} :'.format(np.round(self.supply, 3)) \
+            print('[{}][LOG]'.format(self.name)
+                  + ' S={s} CRR={crr}:'.format(crr=np.round(self.crr, self.precision), s=np.round(self.supply, self.precision)) \
                   + ':'.join([str(r) for _, r in self.reserve_tokens.items()])
             )
 
@@ -46,7 +48,7 @@ class SmartToken2:
 
     @property
     def crr(self):
-        return np.sum([r.crr for _,r in self.reserve_tokens.items()])
+        return np.sum([r.crr for _, r in self.reserve_tokens.items()])
 
     @property
     def reserve(self):
@@ -58,106 +60,145 @@ class SmartToken2:
     def price(self):
         return self.reserve/(self.crr * self.supply)
 
-    def partial_price(self, token):
+    def partial_prices(self):
+        return dict(zip(self.reserve_tokens.keys(),
+                        [self.__partial_price(tkn) for tkn in self.reserve_tokens.keys()]))
+
+    def __partial_price(self, token, reserve_amount=None, supply=None):
         """
-        Implied price of a reserve token
+        Implied price of the SmartToken if one buys it using the given token
         :param token:
+        :param reserve_amount: if unset used the actual reserve amount otherwise this price is sim
         :return:
         """
         assert(token in self.reserve_tokens.keys())
         reserve = self.reserve_tokens[token]
-        assert(type(reserve) is Reserve)
-        return reserve.amount / (reserve.crr * self.supply)
+        assert (type(reserve) is Reserve)
+        if reserve_amount is None:
+            reserve_amount = reserve.amount
+        if supply is None:
+            supply = self.supply
+        return reserve_amount / (reserve.crr * supply)
 
-    def buy(self, amount, from_token):
+    def buy(self, amount, from_token, const=False):
         """
         Exchange amount of reserve token for SmartToken
         :param amount:      amount of reserve token to be sold
         :param from_token:  name of token being sold
+        :param const: set to True to get the answer without modifying the object
         :return:
         """
         assert(from_token in self.reserve_tokens.keys())
         assert(amount >= 0)
         reserve = self.reserve_tokens[from_token]
+        P0 = self.__partial_price(from_token)
         R0 = reserve.amount
         S0 = self.supply
-        self.reserve_tokens[from_token].amount += amount
-        R1 = reserve.amount
+        R1 = R0 + amount
+        if not const:
+            self.reserve_tokens[from_token].amount = R1
         S1 = S0 * np.power(R1/R0, reserve.crr) #update supply while maintaining crr
         dS = S1 - S0
         assert(dS >= 0)
-        self.supply = S1
-        if self.verbose > 0:
+        if not const:
+            self.supply = S1
+        if self.verbose > 1:
             self.log()
-            print('[BUY {n}] {amt}[{ctr}] => {dS}[{n}]'.format(
-                amt=np.round(amount,3),ctr=from_token,
-                dS=np.round(dS,3),n=self.name))
+        if self.verbose > 0:
+            px_eff = amount / dS
+            P1 = self.__partial_price(from_token, R1, S1)
+            slippage = 10000 * (px_eff / P0 - 1)
+            print('[{n}][BUY] {amt}[{ctr}] => {dS}[{n}] ; P0={P0} P1={P1} PAY={px} SLIP={slip}(bps)'.format(
+                amt=np.round(amount, self.precision), ctr=from_token,
+                dS=np.round(dS, self.precision), n=self.name,
+                P0=np.round(P0, self.precision), P1=np.round(P1, self.precision),
+                px=np.round(px_eff, self.precision), slip=np.round(slippage, self.precision)))
         return dS
 
-    def sell(self, amount, to_token):
+    def sell(self, amount, to_token, const=False):
         """
         Exchange SmartToken for a certain amount of reserve token
         :param amount:      amount of SmartToken to be sold
         :param to_token:    name of reserve token to be bought
+        :param const: set to True to get the answer without modifying the object
         :return:
         """
         assert(to_token in self.reserve_tokens.keys())
         assert(amount >= 0 and amount <= self.supply)
         reserve = self.reserve_tokens[to_token]
+        P0 = self.__partial_price(to_token)
         R0 = reserve.amount
         S0 = self.supply
-        self.supply -= amount
-        S1 = self.supply
+        S1 = S0 - amount
+        if not const:
+            self.supply = S1
+
         R1 = R0 * np.power(S1/S0, 1/reserve.crr) #update reserve while maintaining crr
-        self.reserve_tokens[to_token].amount = R1
+        if not const:
+            self.reserve_tokens[to_token].amount = R1
         dR = R0 - R1
         assert(dR >= 0)
-        if self.verbose > 0:
+        if self.verbose > 1:
             self.log()
-            print('[SELL {n}] {amt}[{n}] => {dR}[{ctr}] '.format(
-                amt=np.round(amount,3), n=self.name,
-                ctr=to_token,dR=np.round(dR,3)))
+        if self.verbose > 0:
+            px_eff = dR/amount
+            slippage = 10000*(1-px_eff/P0)
+            P1 = self.__partial_price(to_token, R1, S1)
+            print('[{n}][SELL] {amt}[{n}] => {dR}[{ctr}] ; P0={P0} P1={P1} REC={px} SLIP={slip}(bps)'.format(
+                amt=np.round(amount, self.precision), n=self.name,
+                ctr=to_token, dR=np.round(dR, self.precision),
+                P0=np.round(P0, self.precision), P1=np.round(P1, self.precision),
+                px=np.round(px_eff, self.precision), slip=np.round(slippage, self.precision)
+            ))
         return dR
 
-
-    def exchange(self, amount, from_token, to_token):
+    def exchange(self, amount, from_token, to_token, const=False):
         """
         Exchange between 2 reserve tokens using the SmartToken
         :param amount:      amount of base reserve token to be sold
         :param from_token:  name of base reserve token
         :param to_token:    name of target reserve token
+        :param const: set to True to get the answer without modifying the object
         :return:
         """
         if self.verbose > 0:
             self.log()
-        P0 = self.price(from_token,to_token)
-        st_amount = self.buy(amount, from_token)
-        to_amount = self.sell(st_amount, to_token)
+        P0 = self.exchange_price(from_token,to_token)
+        st_amount = self.buy(amount, from_token, const)
+        to_amount = self.sell(st_amount, to_token, const)
         px_eff = amount/to_amount
         slip = 10000*(px_eff/P0-1)
-        if self.verbose > 0:
+        if self.verbose > 1:
             self.log()
-            print('EXCHANGE {from_amt}[{from_token}] => {ctr_amt}[{ctr_token}] PX={px} slippage={slip}(bps)'.format(
-                from_amt=np.round(amount,3),from_token=from_token,
-                ctr_amt=np.round(to_amount,3),ctr_token=to_token,
-                px=np.round(px_eff,4),slip=np.round(slip,3)))
+        if self.verbose > 0:
+            print('[{n}][EXCH] {from_amt}[{from_token}] => {ctr_amt}[{ctr_token}] PAY={px} SLIP={slip}(bps)'.format(
+                n=self.name, from_amt=np.round(amount, self.precision),from_token=from_token,
+                ctr_amt=np.round(to_amount, self.precision),ctr_token=to_token,
+                px=np.round(px_eff, self.precision), slip=np.round(slip, self.precision)))
         return to_amount
 
-    def price(self, from_token, to_token):
+    def exchange_price(self, from_token, to_token):
         """
         Return the mid price for exchanging from_token => to_token
         :param from_token:
         :param to_token:
         :return:
         """
+        if from_token == self.name:
+            return self.__partial_price(to_token)
+        elif to_token == self.name:
+            return 1/self.__partial_price(from_token)
+
         assert (from_token in self.reserve_tokens.keys())
         assert (to_token in self.reserve_tokens.keys())
         base = self.reserve_tokens[from_token]
-        ctr  = self.reserve_tokens[to_token]
-        px_imp = (base.amount*ctr.crr)/(ctr.amount*base.crr )
+        ctr = self.reserve_tokens[to_token]
+        px_imp = (base.amount*ctr.crr)/(ctr.amount*base.crr)
+        if self.verbose > 1:
+            self.log()
         if self.verbose > 0:
-            print('[{name}] implied {ctr}/{base}={px}'.format(
-              name=self.name,ctr=to_token,base=from_token,px=np.round(px_imp,4)
+            print('[{n}][IMP] {ctr}/{base}={px}'.format(
+              n=self.name, ctr=to_token, base=from_token, px=np.round(px_imp, self.precision)
             ))
         return px_imp
 
@@ -304,9 +345,24 @@ def example4(verbose):
     GNOETH.log()
     GNOETH.add_reserve(ETH)
     GNOETH.log()
-    P0 = GNOETH.price('GNO','ETH')
-    amt = GNOETH.exchange(10,'GNO','ETH')
-    P1 = GNOETH.price('GNO','ETH')
+    P0 = GNOETH.exchange_price('GNO', 'ETH')
+    amt = GNOETH.exchange(10,'GNO', 'ETH')
+    P1 = GNOETH.exchange_price('GNO', 'ETH')
+
+def example5(verbose):
+    print('where we show that for a basket token there is a cheapest reserve to buy the smart token')
+    GNO = Reserve('GNO',amount=25000, crr=0.2, verbose=1)
+    ETH = Reserve('ETH',amount=100000, crr=0.8, verbose=1)
+    GNOETH=SmartToken2('GNOETH', reserve_tokens=dict(GNO=GNO, ETH=ETH), supply=1000, verbose=1, precision=4)
+    print('all partial prices are equal:{}'.format(GNOETH.partial_prices()))
+    P0 = GNOETH.exchange_price('GNO','ETH')
+    amt = GNOETH.exchange(100,'GNO','ETH')
+    P1 = GNOETH.exchange_price('GNO','ETH')
+    print('Displayed SmartToken price: {}'.format(np.round(GNOETH.price, 4)))
+    print('now partial prices are different, SmartToken is cheaper in ETH!: {}'.format(GNOETH.partial_prices()))
+    print('proof:')
+    GNOETH.buy(100, 'ETH', const=True)
+    GNOETH.buy(100, 'GNO', const=True)
 
 def main():
     verbose=1
@@ -318,6 +374,8 @@ def main():
     example3(verbose)
     print('='*80)
     example4(verbose)
+    print('='*80)
+    example5(verbose)
 
 if __name__=='__main__':
     main()
